@@ -1,0 +1,33 @@
+# --- Ядро и веб-фреймворк ---
+fastapi
+uvicorn[standard]
+
+# --- База данных (PostgreSQL) ---
+sqlalchemy
+asyncpg
+
+# --- Кэширование и очереди (Redis) ---
+# Асинхронный клиент для Redis (включает redis.asyncio)
+redis
+
+# --- Взаимодействие с внешними API ---
+httpx
+# Современный асинхронный фреймворк для Telegram-ботов
+aiogram
+
+# --- Безопасность и аутентификация ---
+cryptography
+passlib[bcrypt]
+python-jose[cryptography]
+
+# --- Конфигурация и утилиты ---
+python-dotenv
+Jinja2
+regex
+pydantic-settings
+
+# --- Фоновые запланированные задачи ---
+apscheduler
+
+# --- Часовые пояса ---
+pytz

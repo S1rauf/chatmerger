@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, shrink-to-fit=no">
+    <title>Панель управления</title>
+    <link rel="stylesheet" href="/panel/static/style.css?v=2.6">
+    <script type="module" src="/panel/static/main.js?v=4.4"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    
+
+
+<script>
+    window.WebAppPathPrefix = "{{ webAppPathPrefix }}";
+    // Передаем ID админа в JS
+    window.AdminTelegramId = "{{ settings.telegram_admin_id }}";
+</script>
+</head>
+<body>
+    <div class="container">
+        <div id="header">
+            <h1>Панель управления</h1>
+            <p id="userInfo">Загрузка...</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab-button" data-tab="mainTab">Главная</button>
+            <button class="tab-button" data-tab="tariffsTab">Тарифы</button>
+            <button class="tab-button" data-tab="templatesTab">Шаблоны</button>
+            <button class="tab-button" data-tab="autoRepliesTab">Автоответы</button>
+            <button class="tab-button" data-tab="forwardingTab">Пересылка</button>
+            <button class="tab-button" data-tab="walletTab">Кошелек</button>
+            <button class="tab-button" data-tab="settingsTab">Настройки</button>
+            <button class="tab-button hidden" id="adminTabBtn" data-tab="adminTab">👑 Админ</button>
+        </div>
+
+        <!-- ВКЛАДКА: ГЛАВНАЯ -->
+        <div id="mainTab" class="tab-content">
+
+            <div id="termsAgreementWarning" class="card status-warning hidden" style="border-color: var(--tg-theme-destructive-text-color, #dc3545);">
+                <!-- Содержимое будет сгенерировано JS -->
+            </div>
+            <div id="mainStatusCard" class="card status-loading">Загрузка статуса...</div>
+            <!-- НОВЫЙ БЛОК ДЛЯ ПРЕДУПРЕЖДЕНИЯ -->
+
+            <div class="card">
+                <h3>Подключенные аккаунты Avito</h3>
+                <div id="avitoAccountsList" class="item-list">
+                    <p class="status-loading">Загрузка аккаунтов...</p>
+                </div>
+                <button id="btnAddAvitoAccount" class="hidden">➕ Добавить аккаунт</button>
+            </div>
+        </div>
+
+        <!-- ВКЛАДКА: ТАРИФЫ -->
+        <div id="tariffsTab" class="tab-content">
+            <h2>Тарифы и подписка</h2>
+            <div id="tariffsList" class="tariffs-container">
+                <p class="status-loading">Загрузка тарифов...</p>
+            </div>
+        </div>
+
+        <!-- ВКЛАДКА: Шаблоны -->
+        <div id="templatesTab" class="tab-content">
+             <div class="accordion">
+                <button class="accordion-header">Добавить новый шаблон</button>
+                <div class="accordion-content">
+                    <form class="form-container" id="templateForm">
+                        <input type="hidden" id="templateId">
+                        <div>
+                            <label for="templateName">Название:</label>
+                            <input type="text" id="templateName" placeholder="Например, 'Приветствие'">
+                        </div>
+                        <div>
+                            <label for="templateText">Текст шаблона:</label>
+                            <textarea id="templateText" placeholder="Введите текст вашего шаблона..." rows="4"></textarea>
+                        </div>
+                        <button type="button" id="saveTemplateBtn">Сохранить</button>
+                        <button type="button" id="clearTemplateBtn" class="secondary">Отмена</button>
+                    </form>
+                </div>
+            </div>
+            <h3>Сохраненные шаблоны</h3>
+            <div id="templatesList" class="item-list"></div>
+        </div>
+
+        <!-- ВКЛАДКА: Автоответы -->
+        <div id="autoRepliesTab" class="tab-content">
+            
+            <!-- Блок для выбора аккаунта Avito -->
+            <div class="card">
+                <h3>1. Выберите аккаунт для настройки</h3>
+                <p class="hint">Правила автоответов привязываются к конкретному аккаунту Avito.</p>
+                <select id="autoreplyAccountSelector">
+                    <option value="">-- Сначала выберите аккаунт --</option>
+                    <!-- Опции будут добавлены через JavaScript -->
+                </select>
+            </div>
+
+            <!-- 
+                Этот блок будет скрыт, пока пользователь не выберет аккаунт.
+                JavaScript уберет класс .hidden при выборе.
+            -->
+            <div id="autoRepliesContent" class="hidden">
+                
+                <!-- Аккордеон с формой для добавления/редактирования правила -->
+                <div class="accordion">
+                    <button class="accordion-header">Добавить новое правило</button>
+                    <div class="accordion-content">
+                        <form class="form-container" id="autoReplyForm">
+
+                            <input type="hidden" id="autoReplyId">
+
+                            <div>
+                                <label for="autoReplyName">Название правила:</label>
+                                <input type="text" id="autoReplyName" placeholder="Например, «Вопрос о цене»" required>
+                            </div>
+
+                            <div>
+                                <label for="autoReplyKeywords">Ключевые слова (через запятую):</label>
+                                <input type="text" id="autoReplyKeywords" placeholder="цена, стоимость, сколько стоит">
+                                <p class="hint">Оставьте пустым, чтобы правило срабатывало на любое сообщение (если нет других совпадений).</p>
+                            </div>
+
+                            <div>
+                                <label for="autoReplyMatchType">Тип совпадения:</label>
+                                <select id="autoReplyMatchType">
+                                    <option value="contains_any" selected>Содержит любое из слов</option>
+                                    <option value="contains_all">Содержит все слова</option>
+                                    <option value="exact">Точное совпадение</option>
+                                    <option value="always">Всегда (сработает, если другие не подошли)</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label for="autoReplyText">Текст автоответа:</label>
+                                <textarea id="autoReplyText" placeholder="Введите текст для автоответа..." rows="4" required></textarea>
+                            </div>
+
+                            <div>
+                                <label for="autoReplyDelay">Задержка перед отправкой (сек):</label>
+                                <input type="number" id="autoReplyDelay" placeholder="0" min="0" max="60" value="0">
+                                <p class="hint">Укажите, через сколько секунд отправить ответ (0-60). Это создает эффект присутствия.</p>
+                            </div>
+
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="autoReplyIsActive" checked>
+                                <label for="autoReplyIsActive">Правило активно</label>
+                            </div>
+
+                            <button type="button" id="saveAutoReplyBtn">Сохранить правило</button>
+                            <button type="button" id="clearAutoReplyBtn" class="secondary">Отмена</button>
+                        </form>
+                    </div>
+                </div>
+
+                <h3>Сохраненные правила</h3>
+                <div id="autoRepliesList" class="item-list">
+                    <!-- Список правил будет добавлен через JavaScript -->
+                </div>
+
+            </div> <!-- конец #autoRepliesContent -->
+
+        </div> <!-- конец #autoRepliesTab -->
+        
+        <!-- ВКЛАДКА: Пересылка -->
+        <div id="forwardingTab" class="tab-content">
+            
+            <!-- Блок создания нового приглашения -->
+            <div class="accordion">
+                <button class="accordion-header">➕ Создать новое приглашение для помощника</button>
+                <div class="accordion-content">
+                    <form class="form-container" id="forwardingForm">
+                        <div>
+                            <label for="forwardingRuleName">Имя/Роль помощника:</label>
+                            <input type="text" id="forwardingRuleName" placeholder="Например, «Менеджер Василий»" required>
+                        </div>
+                        <div>
+                            <label for="forwardingInvitePassword">Пароль для приглашения (необязательно):</label>
+                            <input type="text" id="forwardingInvitePassword" placeholder="Надежный пароль">
+                            <p class="hint">Если установить пароль, помощник должен будет ввести его в боте.</p>
+                        </div>
+                        <button type="button" id="createInviteBtn">Создать приглашение</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Блок управления существующими помощниками -->
+            <h3>Приглашения и права доступа</h3>
+            <div id="forwardingRulesList" class="item-list">
+                <!-- Список будет загружен сюда -->
+            </div>
+
+        </div> 
+
+        <!-- ВКЛАДКА: Кошелек -->
+        <div id="walletTab" class="tab-content">
+            <div id="walletInfoCard" class="card status-loading">Загрузка данных кошелька...</div>
+            <div class="card">
+                <h3>История операций</h3>
+                <div id="walletHistory" class="item-list"></div>
+            </div>
+        </div>
+        
+        <!-- ВКЛАДКА: Настройки -->
+        <div id="settingsTab" class="tab-content">
+            <div class="card">
+                <h3>Часовой пояс</h3>
+                <p>Текущий: <strong id="currentUserTimezone">...</strong></p>
+                <select id="timezoneSelect"></select>
+                <button type="button" id="saveTimezoneBtn">Сохранить</button>
+            </div>
+            <div class="card">
+                <h3>Сброс аккаунта</h3>
+                <p class="hint">Внимание! Это действие необратимо. Будут удалены все ваши данные, включая подключенные аккаунты Avito, шаблоны, правила и история.</p>
+                <button type="button" id="fullResetBtn" class="danger">Полный сброс и удаление данных</button>
+            </div>
+        </div>
+
+        <!-- ВКЛАДКА Администратора -->
+        <div id="adminTab" class="tab-content">
+            <h2>Панель Администратора</h2>
+            <div class="card">
+                <h3>Управление пользователями</h3>
+                <div class="table-container">
+                    <table id="adminUsersTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Пользователь</th>
+                                <th>Тариф</th>
+                                <th>Активен до</th>
+                                <th>Баланс</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminUsersTbody">
+                            <!-- Данные будут загружены сюда -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <div id="loadingIndicator" class="loading-indicator hidden">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Модальное окно для управления аккаунтом -->
+    <div id="manageAccountModal" class="modal-overlay hidden">
+        <div class="modal">
+            <button class="modal-close-btn">×</button>
+            <h3 id="manageAccountModalTitle">Управление аккаунтом</h3>
+            <div class="modal-body">
+                <input type="hidden" id="managingAccountId">
+                <div class="form-container">
+                    <div>
+                        <label for="accountAliasInput">Псевдоним:</label>
+                        <input type="text" id="accountAliasInput" placeholder="Например, 'Мой рабочий Avito'">
+                    </div>
+                    <button type="button" id="saveAliasBtn">Сохранить псевдоним</button>
+                </div>
+                <hr>
+                <div class="danger-zone">
+                    <h4>Опасная зона</h4>
+                    <p class="hint">Это действие нельзя будет отменить.</p>
+                    <button type="button" id="deleteAccountBtn" class="danger">Отключить этот аккаунт</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="permissionsModal" class="modal-overlay hidden">
+        <div class="modal">
+            <button class="modal-close-btn">×</button>
+            <h3 id="permissionsModalTitle">Настройка прав доступа</h3>
+            <div class="modal-body">
+                <input type="hidden" id="editingRuleId">
+                <div class="form-container">
+                    <div class="checkbox-container">
+                        <input type="checkbox" id="permissionCanReply">
+                        <label for="permissionCanReply">Разрешить помощнику отвечать на сообщения</label>
+                    </div>
+                    <hr>
+                    <div>
+                        <label>Доступ к аккаунтам Avito:</label>
+                        <p class="hint">Если ни один не выбран, доступ будет ко всем аккаунтам.</p>
+                        <div id="permissionAccountsList">
+                            <!-- Сюда будут загружены чекбоксы с аккаунтами -->
+                        </div>
+                    </div>
+                    <button type-="button" id="savePermissionsBtn">Сохранить права</button>
+                </div>
+            </div>
+        </div>
+    </div>
+        <!-- МОДАЛЬНОЕ ОКНО ДЛЯ СОГЛАШЕНИЯ -->
+    <div id="termsModal" class="modal-overlay hidden">
+        <div class="modal">
+            <button class="modal-close-btn">×</button>
+            <h3>Пользовательское Соглашение</h3>
+            <div class="modal-body" id="termsModalBody" style="text-align: left; white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">
+                <!-- Текст будет вставлен сюда через JS -->
+            </div>
+            <button type="button" id="acceptTermsBtn">✅ Принимаю</button>
+        </div>
+    </div>
+    <div id="paymentsModal" class="modal-overlay hidden">
+        <div class="modal">
+            <button class="modal-close-btn">×</button>
+            <h3 id="paymentsModalTitle">История платежей</h3>
+            <div class="modal-body">
+                <div class="table-container">
+                    <table id="paymentsTable">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Описание</th>
+                                <th>Сумма</th>
+                                <th>Баланс после</th>
+                            </tr>
+                        </thead>
+                        <tbody id="paymentsTbody">
+                            <!-- Сюда будут загружены транзакции -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="manageUserModal" class="modal-overlay hidden">
+        <div class="modal">
+            <button class="modal-close-btn">×</button>
+            <h3 id="manageUserModalTitle">Управление пользователем</h3>
+            <div class="modal-body">
+                <form id="manageUserForm" class="form-container">
+                    <input type="hidden" id="editingUserId">
+                    
+                    <div>
+                        <label for="userTariffSelect">Тарифный план:</label>
+                        <select id="userTariffSelect"></select>
+                    </div>
+                    
+                    <div>
+                        <label for="userExpiresAtInput">Тариф активен до:</label>
+                        <input type="date" id="userExpiresAtInput">
+                        <p class="hint">Оставьте пустым для бессрочного тарифа.</p>
+                    </div>
+                    
+                    <hr>
+
+                    <div>
+                        <label for="userBalanceInput">Текущий баланс:</label>
+                        <input type="number" id="userBalanceInput" step="0.01">
+                    </div>
+                    
+                    <div>
+                        <label for="userAddToBalanceInput">Начислить/Списать с баланса:</label>
+                        <input type="number" id="userAddToBalanceInput" step="0.01" placeholder="Напр: 100 или -50">
+                        <p class="hint">Это создаст транзакцию. Поле "Текущий баланс" будет проигнорировано.</p>
+                    </div>
+
+                    <button type="button" id="saveUserBtn">Сохранить изменения</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+</body>
+</html>
