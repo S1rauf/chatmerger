@@ -44,6 +44,9 @@ services:
     environment:
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
+    volumes:
+      - ./alembic:/alembic
+      - ./alembic.ini:/alembic.ini
     expose:
       - "8000"
     networks:
@@ -53,6 +56,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+  # Сервис Прокси     
   nginx_proxy:
     image: nginx:1.25-alpine
     container_name: nginx_proxy

@@ -63,10 +63,10 @@ async def lifespan(app: FastAPI):
     logger.info("Запуск приложения: Инициализация ресурсов...")
     
     # --- 1. Создание таблиц в БД ---
-    logger.info("Проверка и создание таблиц базы данных...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Таблицы базы данных готовы.")
+    # logger.info("Проверка и создание таблиц базы данных...")
+    # async with engine.begin() as conn:
+    #     await conn.run_sync(Base.metadata.create_all)
+    # logger.info("Таблицы базы данных готовы.")
     
     # --- 2. Загрузка начальных данных ---
     await load_initial_data()
