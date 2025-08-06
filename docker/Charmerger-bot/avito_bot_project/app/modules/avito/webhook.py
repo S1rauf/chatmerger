@@ -77,14 +77,36 @@ class AvitoWebhookHandler:
         # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
         # Формируем сообщение для стрима (этот код у вас уже есть)
-        chat_id = str(message_content.get("chat_id", ""))
+        content = message_content.get("content", {})
+        message_type = message_content.get("type")
+        
         message_data = {
             "account_id": account_id,
-            "chat_id": chat_id,
-            "sender_id": author_id, # sender_id - это author_id
-            "text": str(message_content.get("content", {}).get("text", "")),
+            "chat_id": str(message_content.get("chat_id", "")),
+            "sender_id": author_id,
+            "text": str(content.get("text", "")), # Текст или подпись к фото
             "created_ts": str(message_content.get("created", ""))
         }
+
+        # Добавляем информацию о вложениях
+        if message_type == "image":
+            # Берем самую большую картинку
+            image_url = content.get("image", {}).get("sizes", {}).get("1280x960")
+            if image_url:
+                message_data["image_url"] = image_url
+                # Если у картинки нет подписи, ставим плейсхолдер
+                if not message_data["text"]:
+                    message_data["text"] = "[Изображение]"
+        
+        elif message_type == "voice":
+            voice_id = content.get("voice", {}).get("voice_id")
+            if voice_id:
+                message_data["voice_id"] = voice_id
+                message_data["text"] = "[Голосовое сообщение]"
+        
+        elif message_type not in ["text", "link", "item"]:
+            # Для неподдерживаемых типов (видео, файлы) просто ставим плейсхолдер
+            message_data["text"] = f"[Неподдерживаемое вложение: {message_type}]"
 
         # Проверяем, что у нас есть ключевые данные
         if not message_data["account_id"] or not message_data["chat_id"]:

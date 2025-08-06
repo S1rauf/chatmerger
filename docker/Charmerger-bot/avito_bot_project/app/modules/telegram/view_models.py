@@ -2,7 +2,7 @@
 
 from typing import TypedDict, Optional, List, Dict, Any, Literal
 
-ActionType = Literal["manual_reply", "template_reply", "auto_reply"]
+ActionType = Literal["manual_reply", "template_reply", "auto_reply", "image_reply"]
 
 class ActionHistoryItem(TypedDict):
     type: str
@@ -17,6 +17,11 @@ class ActionLogItem(TypedDict, total=False):
     template_name: str    # Имя шаблона (только для type='template_reply')
     rule_name: str        # Имя правила (только для type='auto_reply')
     timestamp: int        # Время действия
+
+class AttachmentInfo(TypedDict):
+    """Информация о связанном сообщении с входящим вложением."""
+    message_id: int
+    type: str # 'фото', 'голосовое сообщение' и т.д.
 
 class ChatViewModel(TypedDict, total=False):
     """
@@ -40,6 +45,7 @@ class ChatViewModel(TypedDict, total=False):
     last_message_direction: Optional[str]
     is_last_message_read: bool
     last_message_timestamp: Optional[int]
+    last_message_image_url: Optional[str]
 
     # Данные объявления
     item_price_string: Optional[str]
@@ -51,3 +57,6 @@ class ChatViewModel(TypedDict, total=False):
     
     # История действий
     action_history: Optional[List[ActionHistoryItem]]
+
+    # --- Для входящих вложений ---
+    attachment: AttachmentInfo

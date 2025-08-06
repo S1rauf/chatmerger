@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, shrink-to-fit=no">
     <title>Панель управления</title>
     <link rel="stylesheet" href="/panel/static/style.css?v=2.6">
-    <script type="module" src="/panel/static/main.js?v=4.4"></script>
+    <script type="module" src="/panel/static/main.js?v=4.5"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     
 
@@ -179,6 +179,10 @@
                             <label for="forwardingInvitePassword">Пароль для приглашения (необязательно):</label>
                             <input type="text" id="forwardingInvitePassword" placeholder="Надежный пароль">
                             <p class="hint">Если установить пароль, помощник должен будет ввести его в боте.</p>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="forwardingCanReply">
+                            <label for="forwardingCanReply">Разрешить помощнику отвечать на сообщения</label>
                         </div>
                         <button type="button" id="createInviteBtn">Создать приглашение</button>
                     </form>

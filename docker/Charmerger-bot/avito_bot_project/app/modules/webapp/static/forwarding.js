@@ -42,20 +42,26 @@ export async function loadForwardingRules() {
         div.className = 'item-card';
         
         let statusHtml;
-        // На бэкенде мы назвали поле target_user_accepted
+        let actionsHtml;
+
         if (rule.target_user_accepted) { 
             statusHtml = `<span class="status-ok">Принято (${escapeHtml(rule.target_tg_user_display_name)})</span>`;
+            actionsHtml = `
+                <button class="js-manage-permissions" data-id="${rule.id}">Права доступа</button>
+                <button class="danger js-delete-forwarding" data-id="${rule.id}">Удалить</button>
+            `;
         } else {
             statusHtml = `<span class="status-warning">Ожидает принятия</span>`;
+            actionsHtml = `
+                <button class="js-copy-invite" data-link="${escapeHtml(rule.invite_link)}">Копировать ссылку</button>
+                <button class="danger js-delete-forwarding" data-id="${rule.id}">Удалить</button>
+            `;
         }
 
         div.innerHTML = `
             <h4>${escapeHtml(rule.custom_rule_name)}</h4>
             <p><strong>Статус:</strong> ${statusHtml}</p>
-            <div class="item-actions">
-                <button class="js-manage-permissions" data-id="${rule.id}">Права доступа</button>
-                <button class="danger js-delete-forwarding" data-id="${rule.id}">Удалить</button>
-            </div>
+            <div class="item-actions">${actionsHtml}</div>
         `;
         listDiv.appendChild(div);
     });
@@ -67,6 +73,7 @@ export async function loadForwardingRules() {
 export async function createInvite() {
     const nameInput = document.getElementById('forwardingRuleName');
     const passwordInput = document.getElementById('forwardingInvitePassword');
+    const canReplyCheckbox = document.getElementById('forwardingCanReply');
     
     const name = nameInput.value.trim();
     if (!name) {
@@ -77,29 +84,39 @@ export async function createInvite() {
     const payload = {
         custom_rule_name: name,
         invite_password: passwordInput.value.trim() || null,
+        can_reply: canReplyCheckbox.checked
     };
     
     const result = await apiCall('/api/forwarding-rules', 'POST', payload);
-    if (result && result.invite_link) {
+    
+    // Проверяем, что бэкенд ответил успехом
+    if (result && result.success) {
         tg.HapticFeedback.notificationOccurred('success');
         
-        tg.showConfirm(`Приглашение создано! Отправьте эту ссылку-приглашение вашему помощнику.\n\nНажмите ОК, чтобы скопировать ссылку.`, (ok) => {
-            if (ok) {
-                 navigator.clipboard.writeText(result.invite_link).then(() => {
-                     tg.showAlert('Ссылка скопирована в буфер обмена!');
-                 }).catch(err => {
-                     tg.showAlert('Не удалось скопировать. Пожалуйста, сделайте это вручную.');
-                 });
-            }
-        });
+        // Показываем простое и понятное уведомление
+        tg.showAlert(
+            "Приглашение успешно создано! Найдите его в списке ниже и нажмите 'Копировать ссылку', чтобы поделиться."
+        );
         
+        // Очищаем форму, закрываем аккордеон и, самое главное, ОБНОВЛЯЕМ СПИСОК
         nameInput.value = '';
         passwordInput.value = '';
+        canReplyCheckbox.checked = false;
         const accordionHeader = document.querySelector('#forwardingTab .accordion-header');
         if (accordionHeader.classList.contains('active')) {
             accordionHeader.click();
         }
-        loadForwardingRules();
+        loadForwardingRules(); // <- Это действие немедленно покажет новое приглашение
+    }
+}
+
+export function copyInviteLink(link) {
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(link)
+            .then(() => tg.showAlert('Ссылка скопирована в буфер обмена!'))
+            .catch(() => tg.showAlert('Не удалось скопировать ссылку.'));
+    } else {
+        tg.showAlert('Функция копирования недоступна. Пожалуйста, скопируйте ссылку вручную.');
     }
 }
 

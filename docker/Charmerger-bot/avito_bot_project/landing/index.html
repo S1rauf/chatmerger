@@ -224,49 +224,76 @@
         <div class="container">
             <h2>Тарифные планы</h2>
             <div class="tariff-cards">
+                <!-- Тариф "Старт" -->
                 <div class="tariff-card">
                     <h3>Старт</h3>
                     <p class="price">0 ₽ <span>/ навсегда</span></p>
+                    <p class="description">Базовый функционал для ознакомления.</p>
                     <ul>
                         <li>✅ 1 аккаунт Avito</li>
-                        <li>✅ До 10 ответов в день</li>
-                        <li>✅ 1 шаблона ответов</li>
+                        <li>✅ До 10 исходящих ответов/день в Avito</li>
+                        <li>✅ 1 шаблон ответов</li>
                         <li>✅ 1 правило автоответа</li>
-                        <li>✅ 1 заметка к чату</li>
+                        <li>✅ 1 заметка к чату (на аккаунт)</li>
+                        <li>✅ Ответы из Telegram</li>
                         <li class="feature-disabled">❌ Пересылка сообщений</li>
-                        <li class="feature-disabled">❌ Аналитика</li>
+                        <li class="feature-disabled">❌ Расширенная аналитика</li>
+                        <li class="feature-disabled">❌ Приоритетная поддержка</li>
                     </ul>
-                    <a href="#" class="select-tariff" id="tariff-start">Начать бесплатно</a>
+                    <a href="#register" class="select-tariff" id="tariff-start">Начать бесплатно</a>
                 </div>
+
+                <!-- Тариф "PRO" - выделенный -->
                 <div class="tariff-card tariff-card-highlighted">
                     <div class="highlight-badge">Популярный выбор</div>
                     <h3>PRO</h3>
-                    <p class="price">500 ₽ <span>/ месяц</span></p>
+                    <p class="price">290 ₽ <span>/ месяц</span></p>
+                    <p class="description">Для активных продавцов и небольших команд.</p>
                     <ul>
                         <li>✅ До 3 аккаунтов Avito</li>
-                        <li>✅ <b>Безлимитные</b> ответы</li>
+                        <li>✅ <b>Безлимитные</b> ответы в Avito</li>
                         <li>✅ 15 шаблонов ответов</li>
                         <li>✅ 5 правил автоответа</li>
-                        <li>✅ До 10 заметок к чатам</li>
-                        <li>✅ Пересылка 2 помощникам</li>
+                        <li>✅ До 10 заметок к чатам (на аккаунт)</li>
+                        <li>✅ Пересылка сообщений 2 помощникам (только чтение)</li>
                         <li>✅ Базовая аналитика</li>
                     </ul>
-                    <a href="#" class="select-tariff" id="tariff-pro">Выбрать PRO</a>
+                    <a href="#register" class="select-tariff" id="tariff-pro">Выбрать PRO</a>
                 </div>
+
+                <!-- Тариф "Эксперт" -->
                 <div class="tariff-card">
                     <h3>Эксперт</h3>
-                    <p class="price">1000 ₽ <span>/ месяц</span></p>
+                    <p class="price">790 ₽ <span>/ месяц</span></p>
+                    <p class="description">Максимум для профессионалов и агентств.</p>
                     <ul>
-                        <li>✅ До 8 аккаунтов Avito</li>
-                        <li>✅ <b>Безлимитные</b> ответы</li>
+                        <li>✅ До 30 аккаунтов Avito</li>
+                        <li>✅ <b>Безлимитные</b> ответы в Avito</li>
                         <li>✅ 50 шаблонов ответов</li>
-                        <li>✅ 20 правил автоответа</li>
-                        <li>✅ <b>Безлимитные</b> заметки</li>
-                        <li>✅ Пересылка 5 помощникам <b>с правом ответа</b></li>
+                        <li>✅ 50 правил автоответа</li>
+                        <li>✅ <b>Безлимитные</b> заметки к чатам</li>
+                        <li>✅ Пересылка сообщений 10 помощникам <b>с правом ответа</b></li>
                         <li>✅ Полная аналитика</li>
+                        <li>✅ Приоритетная поддержка</li>
                     </ul>
-                    <a href="#" class="select-tariff" id="tariff-expert">Выбрать Эксперт</a>
+                    <a href="#register" class="select-tariff" id="tariff-expert">Выбрать Эксперт</a>
                 </div>
+                
+                <!-- Новый тариф "Корпоративный" -->
+                <div class="tariff-card">
+                    <h3>Корпоративный</h3>
+                    <p class="price">По запросу</p>
+                    <p class="description">Индивидуальные условия для вашего бизнеса.</p>
+                    <ul>
+                        <li>✅ Всё из тарифа "Эксперт"</li>
+                        <li>✅ Персональные лимиты на аккаунты и функции</li>
+                        <li>✅ Выделенный менеджер</li>
+                        <li>✅ Индивидуальные доработки</li>
+                        <li>✅ Персональные условия оплаты</li>
+                    </ul>
+                    <a href="#contact" class="select-tariff" id="tariff-support">Обсудить условия</a>
+                </div>
+
             </div>
         </div>
     </section>
@@ -324,6 +351,7 @@
             document.getElementById('tariff-start').href = baseLink + 'tariff_start';
             document.getElementById('tariff-pro').href = baseLink + 'tariff_pro';
             document.getElementById('tariff-expert').href = baseLink + 'tariff_expert';
+            document.getElementById('tariff-support').href = baseLink + 'support';
             
             if (isMobile) {
                 // Скрываем QR-код на мобильных, так как он не нужен

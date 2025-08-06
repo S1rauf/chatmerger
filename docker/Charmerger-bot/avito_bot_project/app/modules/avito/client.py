@@ -1,7 +1,7 @@
 # src/modules/avito/client.py
 import httpx
 import logging
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 
 # --- ИЗМЕНЯЕМ ИМПОРТ ЗДЕСЬ ---
@@ -283,5 +283,26 @@ class AvitoAPIClient:
             return response.json()
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP error {e.response.status_code} getting messages for chat {chat_id}"
+            logger.error(f"{error_msg}: {e.response.text}")
+            raise AvitoAPIError(error_msg) from e
+    
+    async def get_voice_files(self, voice_ids: List[str]) -> dict:
+        """
+        Получает временные ссылки на файлы голосовых сообщений по их ID, используя API v1.
+        """
+        logger.info(f"Requesting v1 voice files for voice_ids: {voice_ids}")
+        headers = await self.get_auth_headers()
+        
+        # API ожидает ID как строку, разделенную запятыми
+        params = {"voice_ids": ",".join(voice_ids)}
+        
+        url = f"/messenger/v1/accounts/{self.account.avito_user_id}/getVoiceFiles"
+        
+        try:
+            response = await self.http_client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = f"HTTP error {e.response.status_code} getting voice files"
             logger.error(f"{error_msg}: {e.response.text}")
             raise AvitoAPIError(error_msg) from e

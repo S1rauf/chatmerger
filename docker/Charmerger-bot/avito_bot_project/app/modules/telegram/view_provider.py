@@ -16,62 +16,28 @@ VIEW_KEY_TPL = "chat_view:{account_id}:{chat_id}"
 async def rehydrate_view_model(
     redis_client: redis.Redis,
     account: AvitoAccount,
-    chat_id: str,
-    *,  # <-- Этот символ делает все следующие аргументы только именованными
-    is_new_message: bool = False 
+    chat_id: str
 ) -> Optional[ChatViewModel]:
     """
-    Обновляет модель представления, запрашивая информацию о чате и 
-    отдельно - самое последнее сообщение, чтобы гарантировать актуальность.
-    При этом СОХРАНЯЕТ существующий `action_log`, подписчиков и статус прочтения из Redis.
+    Загружает "фоновую" информацию о чате: данные участников, объявления, заметки,
+    а также подписчиков и лог ответов из предыдущей версии модели в Redis.
+    НЕ ЗАГРУЖАЕТ информацию о последнем сообщении.
     """
     view_key = VIEW_KEY_TPL.format(account_id=account.id, chat_id=chat_id)
-    logger.info(f"Rehydrating/updating model for {view_key} with fresh last message.")
+    logger.info(f"Rehydrating base model for {view_key}.")
 
     try:
         api_client = AvitoAPIClient(account)
-        
-        # --- НОВАЯ ЛОГИКА: ДВА ПАРАЛЛЕЛЬНЫХ ЗАПРОСА ---
-        # Запрашиваем информацию о чате и историю сообщений одновременно для скорости
-        chat_info, messages_data = await asyncio.gather(
-            api_client.get_chat_info(chat_id),
-            api_client.get_messages(chat_id, limit=1) # Запрашиваем только 1 самое последнее сообщение
+        chat_info = await api_client.get_chat_info(chat_id)
+
+        interlocutor = next(
+            (user for user in chat_info.get("users", []) if str(user.get("id")) != str(account.avito_user_id)),
+            {}
         )
-
-        # ---!!! ФИНАЛЬНЫЙ ОТЛАДОЧНЫЙ ЛОГ !!!---
-        # Мы хотим увидеть, что именно находится в chat_info.get("users", [])
-        logger.critical(
-            f"[DEBUG-INTERLOCUTOR] RAW DATA for chat {chat_id}: \n"
-            f"My Avito User ID: {account.avito_user_id}\n"
-            f"Users from API: {chat_info.get('users')}"
-        )
-
-        # 1. Обрабатываем общую информацию о чате
-        interlocutor = {} # По умолчанию - пустой словарь
-        users_from_api = chat_info.get("users", [])
-        my_avito_id = account.avito_user_id
-
-        for user_data in users_from_api:
-            # Сравниваем, приведя оба ID к строкам, на всякий случай
-            if str(user_data.get("id")) != str(my_avito_id):
-                interlocutor = user_data
-                break # Нашли собеседника, выходим из цикла
-
-        # Логируем результат поиска
-        logger.critical(
-             f"[DEBUG-INTERLOCUTOR] Found interlocutor object: {interlocutor}"
-        )
-
         item_context = chat_info.get("context", {}).get("value", {})
         
-        # 2. Обрабатываем самое последнее сообщение из отдельного запроса
-        messages_list = messages_data.get("messages", [])
-        last_message = messages_list[0] if messages_list else {}
-        
-        # 3. Получаем свежие заметки из нашей БД
         async with get_session() as session:
             db_notes = await get_all_notes_for_chat(session, account.id, chat_id)
-            logger.info(f"REHYDRATE for chat {chat_id}: Found {len(db_notes)} notes in DB.")
         
         notes_dict = {
             str(note.author.telegram_id): {
@@ -81,12 +47,10 @@ async def rehydrate_view_model(
             } for note in db_notes if note.author
         }
 
-        # 4. Формируем "базовую" модель из всех свежих данных
+        # Формируем базовую модель БЕЗ информации о последнем сообщении
         base_model: ChatViewModel = {
-            "view_version": 10, 
-            "account_id": account.id, 
-            "account_alias": account.alias, 
-            "chat_id": chat_id,
+            "view_version": 13,
+            "account_id": account.id, "account_alias": account.alias, "chat_id": chat_id,
             "interlocutor_name": interlocutor.get("name", "Собеседник"),
             "interlocutor_id": interlocutor.get("id"),
             "is_blocked": interlocutor.get("blocked", False),
@@ -94,33 +58,16 @@ async def rehydrate_view_model(
             "item_price_string": item_context.get("price_string"),
             "item_url": item_context.get("url"),
             "notes": notes_dict,
-            
-            # --- Используем данные из `get_messages` ---
-            "last_message_text": last_message.get("content", {}).get("text", "В этом чате пока нет сообщений."),
-            "last_message_direction": last_message.get("direction"),
-            "last_message_timestamp": last_message.get("created"),
-            "is_last_message_read": last_message.get("is_read", True),
-            
-            # Поля, которые мы будем переносить из старой модели
             "subscribers": {},
             "action_log": []
         }
 
-        # 5. Пытаемся получить ТЕКУЩУЮ модель из Redis, чтобы не потерять важные данные
+        # Сливаем со старой моделью, чтобы не потерять подписчиков и лог ответов
         current_model_json = await redis_client.get(view_key)
         if current_model_json:
-            logger.info(f"Found existing model for {view_key}. Merging data.")
             current_model = json.loads(current_model_json)
-            # Переносим подписчиков, лог действий и, опционально, статус прочтения
             base_model["subscribers"] = current_model.get("subscribers", {})
-            if not is_new_message:
-                base_model["action_log"] = current_model.get("action_log", [])
-            # Если в старой модели стоял флаг `False`, а новое сообщение его не изменило, сохраняем `False`
-            if not current_model.get("is_last_message_read", True):
-                 base_model["is_last_message_read"] = False
-
-        # 6. Сохраняем итоговую, объединенную модель в Redis
-        await redis_client.set(view_key, json.dumps(base_model), ex=VIEW_TTL_SECONDS)
+            base_model["action_log"] = current_model.get("action_log", [])
         
         return base_model
 

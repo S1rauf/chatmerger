@@ -4,7 +4,7 @@ import { applyThemeStyles, openTab } from './ui.js?v=1.1.0';
 import { loadMainStatus, loadAvitoAccounts, syncAccount, openManageModal, closeManageModal, saveAlias, deleteAccount, openTermsModal, closeTermsModal, acceptTerms } from './main-tab.js?v=1.2.0';
 import { loadTemplates, clearTemplateForm, editTemplate, saveTemplate, deleteTemplate } from './templates.js?v=1.3.0';
 import { populateAutoreplyAccountSelector, loadAutoReplies, clearAutoReplyForm, editAutoReply, saveAutoReply, deleteAutoReply } from './autoreplies.js?v=1.2.0';
-import { loadForwardingRules, createInvite, deleteForwardingRule, openPermissionsModal, closePermissionsModal, savePermissions } from './forwarding.js?v=1.3.0';
+import { loadForwardingRules, createInvite, deleteForwardingRule, openPermissionsModal, closePermissionsModal, savePermissions, copyInviteLink } from './forwarding.js?v=1.5.0';
 import { loadTariffs, purchaseTariff } from './tariffs.js?v=1.1.0';
 import { loadWallet } from './wallet.js?v=1.1.0';
 import { loadSettings, saveTimezone, fullReset } from './settings.js?v=1.1.0';
@@ -113,6 +113,7 @@ window.addEventListener('load', () => {
         if (target.id === 'createInviteBtn') createInvite();
         if (target.matches('.js-delete-forwarding')) deleteForwardingRule(target.dataset.id);
 
+        if (target.matches('.js-copy-invite')) { copyInviteLink(target.dataset.link);}
         // Тарифы
         if (target.matches('.js-purchase-tariff')) purchaseTariff(target.dataset.id);
         

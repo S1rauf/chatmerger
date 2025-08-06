@@ -37,7 +37,7 @@ TARIFF_CONFIG: Dict[TariffPlan, Dict[str, Any]] = {
     },
     TariffPlan.PRO: {
         "name_readable": "PRO",
-        "price_rub": 500,
+        "price_rub": 290,
         "duration_days": 30,
         "description_short": "Для активных продавцов и небольших команд.",
    
@@ -65,27 +65,27 @@ TARIFF_CONFIG: Dict[TariffPlan, Dict[str, Any]] = {
     },
     TariffPlan.EXPERT: {
         "name_readable": "Эксперт",
-        "price_rub": 1000,
+        "price_rub": 790,
         "duration_days": 30,
         "description_short": "Максимум для профессионалов и агентств.",
    
         "features_html": [
-            "✅ До 8 аккаунтов Avito",
+            "✅ До 30 аккаунтов Avito",
             "✅ <b>Безлимитные</b> ответы в Avito",
             "✅ 50 шаблонов ответов",
-            "✅ 20 правил автоответа",
+            "✅ 50 правил автоответа",
             "✅ <b>Безлимитные</b> заметки к чатам",
-            "✅ Пересылка сообщений 5 помощникам <b>с правом ответа</b>",
+            "✅ Пересылка сообщений 10 помощникам <b>с правом ответа</b>",
             "✅ Полная аналитика",
             "✅ Приоритетная поддержка"
         ],
 
         "limits": {
-            "avito_accounts": 8,
+            "avito_accounts": 30,
             "daily_outgoing_messages_tg_to_avito": float('inf'),
             "templates": 50,
-            "auto_reply_rules": 20,
-            "forwarding_rules": 5,
+            "auto_reply_rules": 50,
+            "forwarding_rules": 10,
             "forwarding_can_reply": True,
             "chat_notes": float('inf'),
             "analytics_access": "full",

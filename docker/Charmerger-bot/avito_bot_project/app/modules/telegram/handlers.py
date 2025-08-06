@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import redis.asyncio as redis
 from .keyboards import get_single_account_menu, get_avito_accounts_menu
 from .filters import HasAvitoContextFilter
-
+from shared.config import REPLY_MAPPING_TTL
 from shared.config import settings
 from modules.database.crud import (
     get_or_create_user,
@@ -40,13 +40,15 @@ from .view_provider import (
     subscribe_user_to_view,
     VIEW_KEY_TPL
 )
+from aiogram.enums import ParseMode 
+from .view_provider import subscribe_user_to_view 
 from .view_renderer import ViewRenderer
 from modules.billing.service import billing_service 
 from modules.billing.enums import TariffPlan
 from modules.billing.exceptions import InsufficientFundsError
 from modules.billing.config import TARIFF_CONFIG
 from .keyboards import get_deposit_options_keyboard 
-from .payment_handlers import send_deposit_invoice
+from .payment_handlers import send_deposit_invoice 
 from .navigation import handle_navigation_by_action
 from shared.database import get_session
 from modules.database import crud
@@ -54,10 +56,12 @@ from aiogram.fsm.context import FSMContext
 from shared.config import SUPPORT_GREETING_MESSAGE, SUPPORT_FAQ
 from .keyboards import get_support_menu_keyboard
 from .states import ContactAdmin
-
+from modules.avito.messaging import AvitoMessaging
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
 
 # ===================================================================
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========================================
@@ -154,32 +158,117 @@ async def handle_navigation_callback(callback: types.CallbackQuery, state: FSMCo
     await handle_navigation_by_action(action, callback, state)
 
 
-@router.message(F.reply_to_message, HasAvitoContextFilter())
+@router.message(F.text, F.reply_to_message, HasAvitoContextFilter()) # <--- Добавили F.text
 async def handle_reply_message(message: types.Message, redis_client: redis.Redis, avito_context: dict):
-    logger.info(f"Handling reply to Avito message. Context: {avito_context}")
+    logger.info(f"Handling text reply to Avito message. Context: {avito_context}")
     # 1. Сначала отправляем команду "прочитано"
     await redis_client.xadd(
         "avito:chat:actions",
         {"account_id": str(avito_context['avito_account_id']), "chat_id": avito_context['avito_chat_id'], "action": "mark_read"}
     )
-
-    # 2. Затем отправляем сообщение на отправку
+    # 2. Затем отправляем текстовое сообщение на отправку
     outgoing_message = {
         "account_id": str(avito_context['avito_account_id']),
         "chat_id": avito_context['avito_chat_id'],
-        "text": message.text or "[Отправлено вложение]",
+        "text": message.text, # Убираем `or "[Отправлено вложение]"`
         "action_type": "manual_reply",
         "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}"
     }
     await redis_client.xadd("avito:outgoing:messages", outgoing_message)
-
-    # Просто удаляем сообщение пользователя.
-    # Карточка обновится сама после того, как avito_worker обработает ответ.
     try:
         await message.delete()
     except TelegramBadRequest as e:
-        # Игнорируем ошибку, если сообщение уже удалено или нет прав
         logger.warning(f"Could not delete user's reply message: {e}")
+
+# --- НОВОЕ: Хендлер для ответа ФОТОГРАФИЕЙ ---
+@router.message(F.photo, F.reply_to_message, HasAvitoContextFilter())
+async def handle_photo_reply(message: types.Message, redis_client: redis.Redis, bot: Bot, avito_context: dict):
+    """
+    Подход 2: Удаляет старые сообщения и пересылает новые в правильном порядке.
+    """
+    logger.info(f"Handling PHOTO reply (re-send logic). Context: {avito_context}")
+    
+    old_card_message = message.reply_to_message
+    if not old_card_message: return
+
+    # 1. Сохраняем все нужные данные
+    photo = message.photo[-1]
+    photo_file_id = photo.file_id
+    caption = message.caption or ""
+
+    # 2. Удаляем старые сообщения
+    try:
+        await old_card_message.delete()
+        await message.delete()
+    except TelegramBadRequest as e:
+        logger.warning(f"Could not delete old messages: {e}")
+
+    # 3. Отправляем новые сообщения в правильном порядке
+    new_photo_message = None
+    new_card_message = None
+    try:
+        # Сначала отправляем фото
+        new_photo_message = await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=photo_file_id,
+            caption=f"<i>(Ваше вложение для Avito)</i>\n{caption}",
+            parse_mode=ParseMode.HTML
+        )
+        # Затем отправляем новую карточку
+        new_card_message = await bot.send_message(
+            chat_id=message.chat.id,
+            text=old_card_message.text + "\n\n<b>⏳ Отправляю ваше изображение...</b>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to resend messages: {e}")
+        await bot.send_message(message.chat.id, "❌ Произошла ошибка при обработке вашего фото.")
+        return
+
+    # 4. Основная логика отправки в Avito
+    try:
+        account_id = int(avito_context['avito_account_id'])
+        chat_id = avito_context['avito_chat_id']
+        account = await get_avito_account_by_id(account_id)
+        if not account:
+            raise ValueError("Аккаунт Avito не найден")
+
+        file_info = await bot.get_file(photo_file_id)
+        image_bytes = await bot.download_file(file_info.file_path)
+        
+        api_client = AvitoAPIClient(account)
+        messaging = AvitoMessaging(api_client)
+        upload_response = await messaging.upload_image(image_bytes.read())
+        image_id = list(upload_response.keys())[0]
+        
+        # 5. Ставим в очередь задачу на отправку
+        outgoing_message = {
+            "account_id": str(account_id),
+            "chat_id": chat_id,
+            "action_type": "image_reply",
+            "image_id": image_id,
+            "text": caption,
+            "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}",
+        }
+        await redis_client.xadd("avito:outgoing:messages", outgoing_message)
+
+        # 6. Подписываем новую карточку на обновления
+        view_key = f"chat_view:{account_id}:{chat_id}"
+        await subscribe_user_to_view(redis_client, view_key, message.from_user.id, new_card_message.message_id)
+        # И сохраняем контекст для ответа уже на новую карточку
+        context_key = f"tg_context:{new_card_message.message_id}"
+        avito_context['can_reply'] = 'true' # Убедимся, что права на ответ сохраняются
+        await redis_client.set(context_key, json.dumps(avito_context), ex=REPLY_MAPPING_TTL)
+
+    except Exception as e:
+        logger.error(f"Error handling photo reply for chat {chat_id}: {e}", exc_info=True)
+        if new_card_message:
+            await bot.edit_message_text(
+                text=new_card_message.text.replace("⏳ Отправляю ваше изображение...", "❌ Ошибка отправки."),
+                chat_id=new_card_message.chat.id,
+                message_id=new_card_message.message_id
+            )
 
 @router.message(CommandStart(deep_link=True))
 async def handle_deep_link(message: types.Message, command: CommandObject, state: FSMContext, redis_client):
@@ -223,7 +312,9 @@ async def handle_deep_link(message: types.Message, command: CommandObject, state
     else:
         await handle_start_command(message, state)
 
-@router.message(StateFilter(AcceptInvite.waiting_for_password)) 
+
+# --- НОВЫЙ ХЕНДЛЕР ДЛЯ ВВОДА ПАРОЛЯ (с добавленным декоратором и логами) ---
+@router.message(StateFilter(AcceptInvite.waiting_for_password)) # <--- !!! ДОБАВЛЕН ЭТОТ ДЕКОРАТОР !!!
 async def process_invite_password(message: types.Message, state: FSMContext, redis_client):
     user_id = message.from_user.id # Сохраняем для лога
     
@@ -656,6 +747,7 @@ async def delete_chat_note_handler(callback: types.CallbackQuery, redis_client: 
     """Шаг 2 (Путь Б): Пользователь нажал кнопку "Удалить заметку"."""
     await callback.answer("✅ Заметка удалена!", show_alert=False)
     
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Парсим все 4 части ---
     _, _, account_id_str, chat_id, target_message_id_str = callback.data.split(":")
     account_id = int(account_id_str)
     target_message_id = int(target_message_id_str)
@@ -1095,7 +1187,7 @@ async def show_latest_chats(callback: types.CallbackQuery):
     api_client = AvitoAPIClient(account)
     chats_data = await api_client.get_chats(limit=limit, offset=offset)
     
-
+    # ---!!! ИСПРАВЛЕНИЕ ЗДЕСЬ: ПЕРЕДАЕМ `limit` КАК ПОСЛЕДНИЙ АРГУМЕНТ !!!---
     keyboard = build_chats_list_keyboard(chats_data.get("chats", []), account.id, offset, limit)
     
     try:
@@ -1309,6 +1401,7 @@ async def admin_reply_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ContactAdmin.waiting_for_admin_reply)
     
     await callback.answer("Введите ваш ответ...", show_alert=True)
+    # Можно отправить сообщение "Введите ваш ответ", а не alert
     await callback.message.answer("Пожалуйста, отправьте ваш ответ. Он будет переслан пользователю.")
 
 
@@ -1360,6 +1453,21 @@ async def admin_send_reply(message: types.Message, state: FSMContext, bot: Bot):
     except Exception as e:
         logger.error(f"Failed to send admin reply to user {user_id}: {e}", exc_info=True)
         await message.reply(f"❌ Не удалось отправить ответ. Ошибка: {e}")
+
+# --- ВРЕМЕННЫЙ ЛОГИРУЮЩИЙ ХЕНДЛЕР ---
+# @router.callback_query()
+# async def log_all_callbacks(callback: types.CallbackQuery):
+#     """
+#     Этот хендлер ловит АБСОЛЮТНО ВСЕ callback'и.
+#     Он должен быть первым, чтобы гарантированно сработать.
+#     ВНИМАНИЕ: Он перехватит управление, поэтому другие хендлеры
+#     для callback'ов после него не сработают. Используем только для отладки.
+#     """
+#     logger.critical(f"!!!!!!!!!! CATCH-ALL CALLBACK HANDLER !!!!!!!!!!!")
+#     logger.critical(f"Received callback_data: '{callback.data}'")
+#     logger.critical(f"From message ID: {callback.message.message_id}")
+#     # Можно временно ответить пользователю, чтобы видеть, что он сработал
+#     await callback.answer(f"DEBUG: Got '{callback.data}'")
 
 def register_all_handlers(dp: Dispatcher):
     dp.include_router(router)

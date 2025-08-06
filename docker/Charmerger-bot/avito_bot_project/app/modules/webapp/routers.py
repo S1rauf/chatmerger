@@ -63,6 +63,7 @@ class AutoReplyData(BaseModel):
 class ForwardingRuleData(BaseModel):
     custom_rule_name: str
     invite_password: Optional[str] = None
+    can_reply: bool = False
 
 class PermissionsData(BaseModel):
     can_reply: bool
@@ -213,6 +214,10 @@ async def api_get_forwarding_rules(current_user: User = Depends(get_current_weba
         source_display_name = "Все аккаунты"
         if allowed_accounts and isinstance(allowed_accounts, list):
             source_display_name = f"Выбрано аккаунтов: {len(allowed_accounts)}"
+        
+        invite_link = None
+        if not rule.target_telegram_id:
+            invite_link = f"https://t.me/{settings.telegram_bot_username}?start=fw_accept_{rule.invite_code}"
 
         response.append({
             "id": str(rule.id),
@@ -221,7 +226,8 @@ async def api_get_forwarding_rules(current_user: User = Depends(get_current_weba
             "source_avito_account_display_name": source_display_name,
             "can_reply": permissions.get("can_reply", False),
             "target_user_accepted": rule.target_telegram_id is not None,
-            "permissions": permissions
+            "permissions": permissions,
+            "invite_link": invite_link
         })
     return response
 
@@ -237,7 +243,8 @@ async def api_create_forwarding_rule(data: ForwardingRuleData, current_user: Use
             session=session, 
             owner_id=current_user.id, 
             rule_name=data.custom_rule_name, 
-            password=data.invite_password
+            password=data.invite_password,
+            can_reply=data.can_reply 
         )
         await session.commit()
         await session.refresh(new_rule)

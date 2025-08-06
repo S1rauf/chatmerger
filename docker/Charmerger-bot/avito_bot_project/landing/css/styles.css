@@ -467,26 +467,58 @@ footer .container {
     }
 }
 .tariff-cards {
-    display: flex;
-    justify-content: center;
+    display: grid;
+    /* Создаем 2 колонки равной ширины для планшетов и десктопов */
+    grid-template-columns: repeat(2, 1fr);
     gap: 30px;
-    flex-wrap: wrap; /* Позволит карточкам переноситься на новую строку на мобильных */
 }
 
-/* Базовая карточка тарифа */
+/* Для очень широких экранов (например, от 1400px) можно вернуть 4 колонки */
+@media (min-width: 1400px) {
+    .tariff-cards {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+/* Для мобильных устройств (например, до 768px) делаем одну колонку */
+@media (max-width: 768px) {
+    .tariff-cards {
+        grid-template-columns: 1fr;
+    }
+}
+/* ---- КОНЕЦ БЛОКА НА ЗАМЕНУ ---- */
+
+
+/* Базовая карточка тарифа (убираем flex и max-width, они больше не нужны) */
 .tariff-card {
-    flex: 1; /* Карточки будут занимать равное пространство */
-    min-width: 280px; /* Минимальная ширина, чтобы не сжимались слишком сильно */
-    max-width: 350px; /* Максимальная ширина */
-    position: relative; /* Нужно для позиционирования плашки "Популярный выбор" */
-    overflow: hidden; /* Скрывает все, что выходит за пределы скругленных углов */
+    /* flex: 1; -> УБРАТЬ */
+    /* max-width: 350px; -> УБРАТЬ */
+    min-width: 280px; /* Можно оставить на всякий случай */
+    position: relative;
+    overflow: hidden;
+    /* Добавляем, чтобы карточки в ряду были одинаковой высоты */
+    display: flex;
+    flex-direction: column;
+}
+
+/* Дополнительный стиль, чтобы кнопка всегда была внизу */
+.tariff-card .select-tariff {
+    margin-top: auto;
 }
 
 /* Стиль для выделенной карточки */
 .tariff-card-highlighted {
-    border: 2px solid #4A90E2; /* Яркая рамка для привлечения внимания */
-    transform: scale(1.05); /* Немного увеличить в размере */
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15); /* Более заметная тень */
+    border: 2px solid #4A90E2;
+    transform: scale(1.05);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+}
+
+/* Позиционирование выделенной карточки в гриде */
+@media (min-width: 769px) {
+    .tariff-card-highlighted {
+        /* Чтобы эффект увеличения не обрезался соседями */
+        z-index: 1;
+    }
 }
 
 /* Плашка "Популярный выбор" */
@@ -494,7 +526,7 @@ footer .container {
     position: absolute;
     top: 15px;
     right: -45px;
-    background-color: #4A90E2; /* Цвет в тон рамке */
+    background-color: #4A90E2;
     color: white;
     padding: 5px 40px;
     font-size: 14px;
@@ -511,10 +543,10 @@ footer .container {
 
 /* Улучшение читаемости списка */
 .tariff-card ul {
-    text-align: left; /* Текст в списке лучше выравнивать по левому краю */
+    text-align: left;
     padding-left: 20px;
 }
 
 .tariff-card ul li {
-    margin-bottom: 10px; /* Больше воздуха между пунктами */
+    margin-bottom: 10px;
 }

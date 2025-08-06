@@ -3,6 +3,7 @@
 import logging
 import asyncio
 import json
+import httpx
 import redis.asyncio as redis
 from aiogram import Bot
 from db_models import MessageLog # <-- Добавляем импорт MessageLog
@@ -18,7 +19,7 @@ from .view_models import ChatViewModel
 from .view_provider import rehydrate_view_model, subscribe_user_to_view, VIEW_KEY_TPL 
 from modules.database.crud import get_avito_account_by_id, get_or_create_user
 
-from aiogram.types import InlineKeyboardMarkup, FSInputFile
+from aiogram.types import InlineKeyboardMarkup, FSInputFile, InputFile, BufferedInputFile 
 from aiogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
@@ -144,10 +145,10 @@ async def start_telegram_sender_worker(redis_client: redis.Redis, bot: Bot):
 # ===================================================================
 async def start_event_processor_worker(redis_client: redis.Redis, bot: Bot):
     """
-    Слушает очередь 'events:new_avito_message', ЛОГИРУЕТ ВХОДЯЩЕЕ СООБЩЕНИЕ,
-    обновляет модель представления и отправляет карточку пользователям.
+    Слушает очередь 'events:new_avito_message', обрабатывает вложения,
+    отправляет их отдельным сообщением, а затем отправляет карточку чата.
     """
-    logger.info("Event Processor Worker (v14, with stats logging) started.")
+    logger.info("Event Processor Worker (v17, stable logic) started.")
     stream_name = "events:new_avito_message"
     group_name = "event_processors"
     consumer_name = "processor_1"
@@ -184,7 +185,6 @@ async def start_event_processor_worker(redis_client: redis.Redis, bot: Bot):
                         await redis_client.xack(stream_name, group_name, message_id)
                         continue
 
-                    # ---!!! НОВЫЙ БЛОК: ЛОГИРУЕМ ВХОДЯЩЕЕ СООБЩЕНИЕ В БД !!!---
                     async with get_session() as session:
                         log_entry = MessageLog(
                             account_id=account.id,
@@ -192,86 +192,120 @@ async def start_event_processor_worker(redis_client: redis.Redis, bot: Bot):
                             direction='in',
                             is_autoreply=data.get('autoreply_sent') == 'true',
                             trigger_name=data.get('autoreply_rule_name'),
-                            # `created_ts` из Avito - это unix timestamp
                             timestamp=datetime.fromtimestamp(int(data.get('created_ts', 0)), tz=timezone.utc)
                         )
                         session.add(log_entry)
-                        # Коммит произойдет автоматически при выходе из `with`
                     logger.info(f"EVENT_PROCESSOR: Logged incoming message for chat {chat_id} to DB.")
-                    # ---!!! КОНЕЦ НОВОГО БЛОКА !!!---
 
-                    was_autoreplied = data.get('autoreply_sent') == 'true'
-
-                    # 1. Если был автоответ, пытаемся выполнить mark_read, используя "замок"
-                    if was_autoreplied:
-                        lock_key = f"action_lock:mark_read:{data['chat_id']}"
-                        if await redis_client.set(lock_key, "1", ex=60, nx=True):
-                            logger.info(f"EVENT_WORKER: Acquired lock '{lock_key}'. Performing mark_read.")
-                            try:
-                                api_client = AvitoAPIClient(account)
-                                await api_client.mark_chat_as_read(chat_id)
-                                logger.info(f"EVENT_WORKER: Marked chat {chat_id} as read due to autoreply.")
-                            except Exception as e:
-                                logger.error(f"EVENT_WORKER: Failed to mark chat as read for {chat_id}: {e}")
-                        else:
-                            logger.info(f"EVENT_WORKER: Lock '{lock_key}' already exists. Skipping mark_read.")
-
-                    # 2. Обновляем базовую информацию о чате
-                    model = await rehydrate_view_model(redis_client, account, chat_id, is_new_message=True)
+                    # 1. Загружаем "фоновую" информацию о чате (имена, заметки и т.д.)
+                    model = await rehydrate_view_model(redis_client, account, chat_id)
                     if not model:
                         await redis_client.xack(stream_name, group_name, message_id)
                         continue
-                    
-                    # 3. Обновляем информацию о ПОСЛЕДНЕМ ВХОДЯЩЕМ сообщении
-                    model['last_message_text'] = data.get('text', '[Нет текста]')
-                    model['last_message_direction'] = 'in'
-                    model['last_message_timestamp'] = int(data.get('created_ts', 0))
 
-                    # 4. Устанавливаем флаг прочтения и обновляем action_log
-                    # Устанавливаем флаг прочтения и добавляем В НЕГО запись об автоответе, если он был
+                    # 2. Отправляем вложение, если оно есть
+                    attachment_message_id = None
+                    attachment_type = None
+                    interlocutor_name = model.get('interlocutor_name', 'клиент')
+                    try:
+                        image_url = data.get('image_url')
+                        voice_id = data.get('voice_id')
+                        video_preview_url = data.get('video_preview_url')
+                        location_lat = data.get('location_lat')
+                        location_lon = data.get('location_lon')
+
+                        if image_url:
+                            attachment_type = "фото"
+                            sent_attachment = await bot.send_photo(
+                                chat_id=user_telegram_id, photo=image_url,
+                                caption=f"Вложение (фото) от: {interlocutor_name}"
+                            )
+                            attachment_message_id = sent_attachment.message_id
+                        elif voice_id:
+                            attachment_type = "голосовое сообщение"
+                            api_client = AvitoAPIClient(account)
+                            voice_data = await api_client.get_voice_files([voice_id])
+                            voice_url = voice_data.get('voices_urls', {}).get(voice_id)
+                            if voice_url:
+                                async with httpx.AsyncClient() as client:
+                                    r = await client.get(voice_url)
+                                    r.raise_for_status()
+                                    sent_attachment = await bot.send_voice(
+                                        chat_id=user_telegram_id,
+                                        voice=BufferedInputFile(r.content, filename="voice.mp4"),
+                                        caption=f"Вложение (голос) от: {interlocutor_name}"
+                                    )
+                                    attachment_message_id = sent_attachment.message_id
+                        elif video_preview_url:
+                            attachment_type = "видео"
+                            sent_attachment = await bot.send_photo(
+                                chat_id=user_telegram_id, 
+                                photo=video_preview_url,
+                                caption=f"Вложение (видео-превью) от: {interlocutor_name}\n(Просмотр доступен в Avito)"
+                            )
+                            attachment_message_id = sent_attachment.message_id
+                        elif location_lat and location_lon:
+                            attachment_type = "геопозиция"
+                            sent_attachment = await bot.send_location(
+                                chat_id=user_telegram_id,
+                                latitude=float(location_lat),
+                                longitude=float(location_lon)
+                            )
+                            attachment_message_id = sent_attachment.message_id
+                    except Exception as e:
+                        logger.error(f"EVENT_PROCESSOR: Failed to send attachment to {user_telegram_id}: {e}", exc_info=True)
+
+                    model['action_log'] = []
+                    
+                    # 3. УСТАНАВЛИВАЕМ в модель информацию о КОНКРЕТНОМ последнем сообщении
+                    if attachment_message_id and attachment_type:
+                        model['last_client_message_attachment'] = {"message_id": attachment_message_id, "type": attachment_type}
+                        model['last_client_message_text'] = data.get('text') or f"[{attachment_type.capitalize()}]"
+                    else:
+                        model['last_client_message_text'] = data.get('text', '[Нет текста]')
+                        model.pop('last_client_message_attachment', None)
+                    
+                    model['last_client_message_timestamp'] = int(data.get('created_ts', 0))
+                    
+                    was_autoreplied = data.get('autoreply_sent') == 'true'
                     if was_autoreplied:
                         model['is_last_message_read'] = True
-                        
-                        # Эта логика теперь будет добавлять автоответ в пустой action_log
                         log_entry = {
-                            "type": "auto_reply",
-                            "author_name": "Автоответчик",
+                            "type": "auto_reply", "author_name": "Автоответчик",
                             "text": data.get('autoreply_text', '...'),
                             "rule_name": data.get('autoreply_rule_name', '...'),
                             "timestamp": int(datetime.now(timezone.utc).timestamp())
                         }
-                        model['action_log'].append(log_entry)
+                        if 'action_log' not in model: model['action_log'] = []
+                        model['action_log'].insert(0, log_entry)
                     else:
                         model['is_last_message_read'] = False
 
-                    # 5. Сохраняем итоговую модель в Redis
+                    # 4. СОХРАНЯЕМ финальную модель и отправляем карточку
                     view_key = VIEW_KEY_TPL.format(account_id=account.id, chat_id=chat_id)
                     await redis_client.set(view_key, json.dumps(model), keepttl=True)
+                    sent_card_message = await renderer.render_new_card(model, user)
 
-                    # 6. Рендерим и отправляем НОВУЮ карточку пользователю
-                    model['user_telegram_id_for_render'] = user.telegram_id
-                    sent_message = await renderer.render_new_card(model, user)
-
-                    # 7. Подписываем на обновления
-                    if sent_message:
+                    # 5. Подписываем на обновления
+                    if sent_card_message:
                         await subscribe_user_to_view(
-                            redis_client, view_key, user.telegram_id, sent_message.message_id
+                            redis_client, view_key, user.telegram_id, sent_card_message.message_id
                         )
-                        context_key = f"tg_context:{sent_message.message_id}"
+                        context_key = f"tg_context:{sent_card_message.message_id}"
                         context_value = json.dumps({
-                            "avito_chat_id": model['chat_id'], 
+                            "avito_chat_id": model['chat_id'],
                             "avito_account_id": model['account_id'],
                             "can_reply": can_reply_flag
                         })
                         await redis_client.set(context_key, context_value, ex=REPLY_MAPPING_TTL)
-                        logger.info(f"EVENT_PROCESSOR: Saved reply context for msg {sent_message.message_id}")
-                    
+                        logger.info(f"EVENT_PROCESSOR: Saved reply context for card msg {sent_card_message.message_id}")
+
                     await redis_client.xack(stream_name, group_name, message_id)
 
         except Exception as e:
             logger.error(f"Critical error in 'start_event_processor_worker': {e}", exc_info=True)
             await asyncio.sleep(5)
-            
+
 # ===================================================================
 # === ВОРКЕР 3: Рендеринг карточек чатов =============================
 # ===================================================================

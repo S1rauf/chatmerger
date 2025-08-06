@@ -65,93 +65,87 @@ class ViewRenderer:
         return builder
 
     def _build_text(self, model: ChatViewModel, user_timezone_str: str) -> str:
-        """
-        Собирает полный текст карточки. Информация в "шапке" теперь не зависит
-        от направления последнего сообщения.
-        """
         try:
             user_tz = pytz.timezone(user_timezone_str)
         except pytz.UnknownTimeZoneError:
             user_tz = pytz.timezone("Europe/Moscow")
 
-        # --- Блок 1: Основная информация (ИСПРАВЛЕННАЯ ЛОГИКА) ---
+        # --- Блок 1: Шапка (без изменений) ---
         account_display_name = html.escape(model.get('account_alias') or f"Аккаунт ID {model.get('account_id')}")
         header_text = f"<b>Сообщение с «{account_display_name}»</b>"
-        
         interlocutor_name = html.escape(model.get('interlocutor_name', 'Собеседник'))
         item_title = html.escape(model.get("item_title", "Объявление"))
         item_price = html.escape(model.get("item_price_string", ""))
-
-        header_parts = [header_text]
-        
-        # ---!!! КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: УБИРАЕМ УСЛОВИЕ !!!---
-        # Информация о собеседнике и времени теперь отображается всегда.
-        header_parts.append(f"👤 <b>От:</b> {interlocutor_name}")
-        
-        # Мы по-прежнему берем время из `last_message_timestamp`, 
-        # но теперь не важно, входящее оно или исходящее.
-        if ts := model.get('last_message_timestamp'):
+        header_parts = [header_text, f"👤 <b>От:</b> {interlocutor_name}"]
+        if ts := model.get('last_client_message_timestamp'):
             dt_utc = datetime.fromtimestamp(ts, tz=pytz.utc)
             dt_local = dt_utc.astimezone(user_tz)
             header_parts.append(f"⏰ {dt_local.strftime('%d.%m.%Y %H:%M')} ({dt_local.tzname()})")
-        # ---!!! КОНЕЦ ИЗМЕНЕНИЯ !!!---
-
         item_url = model.get("item_url")
         item_link = f"<a href='{item_url}'>{item_title}</a>" if item_url else item_title
         price_part = f" | <b>{item_price}</b>" if item_price else ""
         header_parts.append(f"📦 <b>Объявление:</b> {item_link}{price_part}")
-        
         header_block = "\n".join(header_parts)
 
-        # --- Блок 2: Последнее сообщение КЛИЕНТА ---
-        last_client_message_text = "<i>(Ожидание нового сообщения от клиента...)</i>"
-        if model.get('last_message_direction') == 'in' and model.get('last_message_text'):
-             last_client_message_text = html.escape(model.get('last_message_text'))
+        # --- Блок 2: Сообщение клиента (ИСПРАВЛЕННАЯ ЛОГИКА) ---
+        attachment_info = model.get('last_client_message_attachment')
+        client_text = model.get('last_client_message_text')
         
-        message_block = f"💬 <b>Сообщение клиента:</b>\n<blockquote>{last_client_message_text}</blockquote>"
+        message_content_html = ""
 
-        # --- Блок 3: Логика обработки action_log (КЛЮЧЕВЫЕ ИЗМЕНЕНИЯ) ---
+        if attachment_info:
+            attachment_type_display = html.escape(attachment_info.get('type', 'вложение'))
+            message_content_html = f"<i><b>Получено новое {attachment_type_display}</b> (см. сообщение выше).</i>"
+            # Проверяем, есть ли осмысленная подпись (не просто плейсхолдер)
+            if client_text and not client_text.startswith(f"[{attachment_type_display.capitalize()}]"):
+                message_content_html += f"\n\n<b>Подпись:</b> <blockquote>{html.escape(client_text)}</blockquote>"
+        elif client_text:
+            message_content_html = f"<blockquote>{html.escape(client_text)}</blockquote>"
+        else:
+            message_content_html = "<i>(Ожидание нового сообщения от клиента...)</i>"
+
+        message_block = f"💬 <b>Сообщение клиента:</b>\n{message_content_html}"
+
+        # --- Блок 3: Логика обработки action_log (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
         manual_reply_block = ""
         other_actions_block = ""
         if action_log := model.get('action_log'):
-            manual_replies = sorted([e for e in action_log if e.get("type") == "manual_reply"], key=lambda x: x.get('timestamp', 0), reverse=True)
-            other_actions = sorted([e for e in action_log if e.get("type") != "manual_reply"], key=lambda x: x.get('timestamp', 0), reverse=True)
+            # Сортируем все записи по времени
+            sorted_log = sorted(action_log, key=lambda x: x.get('timestamp', 0), reverse=True)
+            
+            manual_parts = []
+            other_parts = []
 
-            if manual_replies:
-                log_parts = []
-                for entry in manual_replies:
-                    author = html.escape(entry.get("author_name", "..."))
-                    text = html.escape(entry.get("text", "..."))
-                    # --- Используем часовой пояс ---
+            for entry in sorted_log:
+                author = html.escape(entry.get("author_name", "..."))
+                text = html.escape(entry.get("text", "..."))
+                entry_type = entry.get("type")
+                
+                if entry_type in ["manual_reply", "image_reply"]:
                     dt_utc = datetime.fromtimestamp(entry.get('timestamp', 0), tz=pytz.utc)
                     dt_local = dt_utc.astimezone(user_tz)
                     time_str = dt_local.strftime('%d.%m %H:%M')
                     prefix = f"<b>Ответ от {author}</b> ({time_str}):"
-                    log_parts.append(f"{prefix}\n<blockquote>{text}</blockquote>")
-                all_logs_text = "\n\n".join(log_parts)
-                manual_reply_block = (f'✍️ <b>Ваши ответы ({len(manual_replies)}):</b>\n<blockquote expandable>{all_logs_text}</blockquote>')
+                    manual_parts.append(f"{prefix}\n<blockquote>{text}</blockquote>")
 
+                elif entry_type == "template_reply":
+                    tpl_name = html.escape(entry.get("template_name", "..."))
+                    prefix = f"📄 <b>Шаблон «{tpl_name}»</b> ({author}):"
+                    other_parts.append(f"{prefix}\n<blockquote>{text}</blockquote>")
+
+                elif entry_type == "auto_reply":
+                    rule_name = html.escape(entry.get("rule_name", "..."))
+                    prefix = f"🤖 <b>Автоответ «{rule_name}»:</b>"
+                    other_parts.append(f"{prefix}\n<blockquote>{text}</blockquote>")
+
+            if manual_parts:
+                all_manual_text = "\n\n".join(manual_parts)
+                manual_reply_block = (f'✍️ <b>Ваши ответы ({len(manual_parts)}):</b>\n<blockquote expandable>{all_manual_text}</blockquote>')
             
-            # --- Формируем блок для остальных действий (шаблоны, автоответы) ---
-            if other_actions:
-                log_parts = []
-                for entry in other_actions:
-                    author = html.escape(entry.get("author_name", "..."))
-                    text = html.escape(entry.get("text", "..."))
-                    if entry["type"] == "template_reply":
-                        tpl_name = html.escape(entry.get("template_name", "..."))
-                        prefix = f"📄 <b>Шаблонный ответ «{tpl_name}»</b> ({author}):"
-                    else: # auto_reply
-                        rule_name = html.escape(entry.get("rule_name", "..."))
-                        prefix = f"🤖 <b>Автоответ «{rule_name}»:</b>"
-                    
-                    log_parts.append(f"{prefix}\n<blockquote>{text}</blockquote>")
-                
-                # Этот блок не будем сворачивать, чтобы важные автоответы были видны
-                other_actions_block = "\n\n".join(log_parts)
+            if other_parts:
+                other_actions_block = "\n\n".join(other_parts)
 
-
-        # --- Блок 4: Заметки (без изменений) ---
+        # --- Блок 4: Заметки (ВОССТАНОВЛЕННЫЙ КОД) ---
         notes_block = ""
         if notes := model.get('notes'):
             sorted_notes = sorted(notes.values(), key=lambda x: x.get('timestamp', 0), reverse=True)
@@ -160,7 +154,6 @@ class ViewRenderer:
                 for note in sorted_notes:
                     author = html.escape(note.get('author_name', '...'))
                     text = html.escape(note.get('text', '...'))
-                    # --- Используем часовой пояс ---
                     dt_utc = datetime.fromtimestamp(note.get('timestamp', 0), tz=pytz.utc)
                     dt_local = dt_utc.astimezone(user_tz)
                     date_str = dt_local.strftime('%d.%m.%y %H:%M')
@@ -170,13 +163,9 @@ class ViewRenderer:
             
         # --- Финальная Сборка ---
         final_parts = [header_block, message_block]
-        if manual_reply_block:
-            final_parts.append(manual_reply_block)
-        if other_actions_block:
-            final_parts.append(other_actions_block)
-        if notes_block:
-            final_parts.append(notes_block)
-            
+        if other_actions_block: final_parts.append(other_actions_block)
+        if manual_reply_block: final_parts.append(manual_reply_block)
+        if notes_block: final_parts.append(notes_block)
         return "\n\n".join(final_parts)
 
     async def render_new_card(self, model: ChatViewModel, user: User) -> Optional[types.Message]:

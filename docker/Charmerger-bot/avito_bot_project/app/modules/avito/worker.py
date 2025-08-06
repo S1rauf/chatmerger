@@ -7,10 +7,9 @@ from typing import Optional
 import json
 from db_models import MessageLog
 from datetime import datetime, timezone
-from ..telegram.view_provider import VIEW_KEY_TPL # <-- Импортируем ключ
-from ..telegram.view_renderer import ViewRenderer # <-- Импортируем рендерер
-from ..telegram.bot import bot # <-- Импортируем объект бота
-
+from ..telegram.view_provider import VIEW_KEY_TPL 
+from ..telegram.view_renderer import ViewRenderer 
+from ..telegram.bot import bot 
 import redis.asyncio as redis
 from sqlalchemy import select
 
@@ -19,7 +18,7 @@ from shared.database import get_session
 from db_models import AvitoAccount
 from .client import AvitoAPIClient
 from .messaging import AvitoMessaging
-from .actions import AvitoChatActions # <-- Импортируем Actions
+from .actions import AvitoChatActions 
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,8 @@ async def process_outgoing_messages(redis_client: redis.Redis):
                     
                     account_id = int(data['account_id'])
                     chat_id = data['chat_id']
-                    text_to_send = data['text']
+
+                    action_type = data.get("action_type", "manual_reply")
                     
                     async with get_session() as session:
                         account = await session.get(AvitoAccount, account_id)
@@ -69,11 +69,21 @@ async def process_outgoing_messages(redis_client: redis.Redis):
                         # 1. Отправляем сообщение в Avito
                         api_client = AvitoAPIClient(account)
                         messaging = AvitoMessaging(api_client)
-                        await messaging.send_text_message(chat_id, text_to_send)
-                        logger.info(f"AVITO_WORKER: Successfully sent message to Avito chat {chat_id}")
 
-                        # ---!!! НОВЫЙ БЛОК: ЛОГИРУЕМ ИСХОДЯЩЕЕ СООБЩЕНИЕ В БД !!!---
-                        action_type = data.get("action_type", "manual_reply")
+                        sent_text_for_log = data.get('text', '')
+                        
+                        if action_type == "image_reply":
+                            image_id = data['image_id']
+                            await messaging.send_image_message(chat_id, image_id, sent_text_for_log)
+                            logger.info(f"AVITO_WORKER: Successfully sent IMAGE to Avito chat {chat_id}")
+                            # Для лога используем подпись или плейсхолдер
+                            if not sent_text_for_log:
+                                sent_text_for_log = "[Изображение]"
+                        else: # text, template, autoreply
+                            await messaging.send_text_message(chat_id, sent_text_for_log)
+                            logger.info(f"AVITO_WORKER: Successfully sent TEXT to Avito chat {chat_id}")
+
+                        # ---!!!  БЛОК: ЛОГИРУЕМ ИСХОДЯЩЕЕ СООБЩЕНИЕ В БД !!!---
                         is_autoreply = action_type == "auto_reply"
                         trigger_name = None
                         if action_type == "template_reply":
@@ -91,7 +101,7 @@ async def process_outgoing_messages(redis_client: redis.Redis):
                             )
                             log_session.add(log_entry_db)
                         logger.info(f"AVITO_WORKER: Logged outgoing message for chat {chat_id} to DB.")
-                        # ---!!! КОНЕЦ НОВОГО БЛОКА !!!---
+                        # ---!!! КОНЕЦ  БЛОКА !!!---
 
                         # 2. Обновляем нашу ChatViewModel
                         view_key = VIEW_KEY_TPL.format(account_id=account.id, chat_id=chat_id)
@@ -102,30 +112,17 @@ async def process_outgoing_messages(redis_client: redis.Redis):
                             log_entry = {
                                 "type": action_type,
                                 "author_name": data.get("author_name", "Неизвестно"),
-                                "text": text_to_send,
+                                "text": sent_text_for_log,
                                 "timestamp": int(datetime.now(timezone.utc).timestamp())
                             }
-                            if log_entry["type"] == "template_reply":
-                                log_entry["template_name"] = data.get("template_name", "...")
-                            if log_entry["type"] == "auto_reply":
-                                log_entry["rule_name"] = data.get("rule_name", "...")
-
+                            
                             action_log = model.setdefault("action_log", [])
                             action_log.insert(0, log_entry)
                             model["action_log"] = action_log[:5]
-
-                            # ---!!! ВОЗВРАЩАЕМ ПРАВИЛЬНУЮ ЛОГИКУ ОБНОВЛЕНИЯ !!!---
-                            # Наш ответ становится последним событием в чате
-                            # model["last_message_text"] = text_to_send
-                            # model["last_message_direction"] = "out"
-                            # model["last_message_timestamp"] = log_entry["timestamp"]
-                            # Так как мы ответили, последнее сообщение клиента считается прочитанным
                             model["is_last_message_read"] = True
-                            # ---!!! КОНЕЦ ИЗМЕНЕНИЯ !!!---
                             
                             await redis_client.set(view_key, json.dumps(model), keepttl=True)
                             
-                            # 3. Триггерим перерисовку у всех
                             renderer = ViewRenderer(bot, redis_client)
                             await renderer.update_all_subscribers(view_key, model)
 

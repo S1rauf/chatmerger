@@ -515,13 +515,19 @@ async def check_account_ownership(session: AsyncSession, account_id: int, user_i
 
 # === CRUD ДЛЯ ПРАВИЛ ПЕРЕСЫЛКИ (Пример) ===
 async def create_forwarding_rule(
-    session: AsyncSession, owner_id: int, rule_name: str, password: Optional[str]
+    session: AsyncSession, owner_id: int, rule_name: str, password: Optional[str], can_reply: bool 
 ) -> ForwardingRule:
     """Создает 'слот' для помощника (правило) с паролем."""
+    initial_permissions = {
+        "can_reply": can_reply,
+        "allowed_accounts": None # По умолчанию доступ ко всем аккаунтам
+    }
+    
     new_rule = ForwardingRule(
         owner_id=owner_id,
         custom_rule_name=rule_name,
-        invite_password=password
+        invite_password=password,
+        permissions=initial_permissions # <-- Устанавливаем права при создании
     )
     session.add(new_rule)
     return new_rule
