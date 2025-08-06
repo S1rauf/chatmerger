@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 
 import redis.asyncio as redis
@@ -140,5 +140,49 @@ class BillingService:
         
         if current_count >= limit:
             raise TariffLimitReachedError(f"Достигнут лимит помощников ({limit} шт.) для вашего тарифа.")
-            
+    
+    @classmethod
+    async def check_avito_account_limit(cls, user: User, session: AsyncSession):
+        """Проверяет, может ли пользователь добавить еще один аккаунт Avito."""
+        current_count = await session.scalar(
+            select(func.count(AvitoAccount.id)).where(AvitoAccount.user_id == user.id)
+        )
+        tariff_plan = cls.get_user_tariff_plan(user)
+        limit = cls.get_tariff_limits(tariff_plan).get("avito_accounts", 0)
+        
+        if current_count >= limit:
+            raise TariffLimitReachedError(f"Достигнут лимит аккаунтов Avito ({limit} шт.) для вашего тарифа.")
+
+    @classmethod
+    async def check_and_increment_daily_messages(
+        cls, user: User, redis_client: redis.Redis
+    ):
+        """
+        Проверяет и увеличивает счетчик отправленных вручную сообщений за день.
+        Использует Redis для хранения счетчика.
+        """
+        tariff_plan = cls.get_user_tariff_plan(user)
+        limit = cls.get_tariff_limits(tariff_plan).get("daily_outgoing_messages_tg_to_avito", 0)
+        
+        # Бесконечный лимит
+        if limit == float('inf'):
+            return
+
+        # Ключ включает ID пользователя и текущую дату в UTC
+        today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        redis_key = f"daily_msg_count:{user.id}:{today_utc}"
+
+        # Атомарно получаем текущее значение счетчика
+        current_count = await redis_client.get(redis_key)
+        current_count = int(current_count) if current_count else 0
+        
+        if current_count >= limit:
+            raise TariffLimitReachedError(f"Достигнут дневной лимит на отправку сообщений ({limit} шт.) для вашего тарифа.")
+
+        # Увеличиваем счетчик и устанавливаем время жизни ключа (25 часов на случай смены часовых поясов)
+        pipe = redis_client.pipeline()
+        pipe.incr(redis_key)
+        pipe.expire(redis_key, timedelta(hours=25))
+        await pipe.execute()
+                    
 billing_service = BillingService()

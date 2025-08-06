@@ -43,9 +43,9 @@ from .view_provider import (
 from aiogram.enums import ParseMode 
 from .view_provider import subscribe_user_to_view 
 from .view_renderer import ViewRenderer
-from modules.billing.service import billing_service 
+from modules.billing.service import billing_service
+from modules.billing.exceptions import TariffLimitReachedError, InsufficientFundsError, BillingError
 from modules.billing.enums import TariffPlan
-from modules.billing.exceptions import InsufficientFundsError
 from modules.billing.config import TARIFF_CONFIG
 from .keyboards import get_deposit_options_keyboard 
 from .payment_handlers import send_deposit_invoice 
@@ -90,28 +90,47 @@ async def _show_accounts_menu(target: types.Message | types.CallbackQuery, user_
         except TelegramBadRequest: pass
         await target.bot.send_message(target.from_user.id, text, reply_markup=keyboard, parse_mode="Markdown")
 
+async def show_chat_card_by_context(avito_context: dict, user_tg: types.User, redis_client: redis.Redis, bot: Bot):
+    """Перерисовывает карточку чата, используя данные из контекста."""
+    try:
+        account_id = int(avito_context['avito_account_id'])
+        chat_id = avito_context['avito_chat_id']
+        account = await get_avito_account_by_id(account_id)
+        if not account: return
+
+        view_key = VIEW_KEY_TPL.format(account_id=account.id, chat_id=chat_id)
+        model = await rehydrate_view_model(redis_client, account, chat_id)
+        if not model: return
+
+        renderer = ViewRenderer(bot, redis_client)
+        user_db = await get_or_create_user(user_tg.id, user_tg.username)
+        sent_message = await renderer.render_new_card(model, user_db)
+        if sent_message:
+            await subscribe_user_to_view(redis_client, view_key, user_db.telegram_id, sent_message.message_id)
+            context_key = f"tg_context:{sent_message.message_id}"
+            await redis_client.set(context_key, json.dumps(avito_context), ex=REPLY_MAPPING_TTL)
+    except Exception as e:
+        logger.error(f"Failed to redraw chat card after error: {e}")
 # ===================================================================
 # === УПРАВЛЕНИЕ АККАУНТАМИ ========================================
 # ===================================================================
 
 @router.callback_query(lambda c: c.data == "avito_acc:add_new")
 async def add_new_avito_account(callback: types.CallbackQuery):
-    """
-    Генерирует ссылку для подключения нового аккаунта Avito.
-    Срабатывает при нажатии на кнопку "Добавить аккаунт".
-    """
     logger.info(f"Handler 'add_new_avito_account' triggered for user {callback.from_user.id}")
     
-    await callback.answer("Генерирую ссылку для подключения...", show_alert=False)
-    
     try:
-        # Получаем или создаем пользователя в нашей БД, чтобы получить его внутренний ID
-        db_user = await get_or_create_user(
-            telegram_id=callback.from_user.id, 
-            username=callback.from_user.username
-        )
+        async with get_session() as session:
+            db_user = await crud.get_or_create_user(
+                telegram_id=callback.from_user.id,
+                username=callback.from_user.username
+            )
+            
+            # --- ИЗМЕНЕНИЕ: Проверка лимита на количество аккаунтов ---
+            await billing_service.check_avito_account_limit(db_user, session)
+            
+        await callback.answer("Генерирую ссылку для подключения...", show_alert=False)
         
-        # Формируем URL для FastAPI-эндпоинта, который начнет OAuth-процесс
         connect_url = f"{settings.webapp_base_url}/connect/avito?user_id={db_user.id}"
         
         text = (
@@ -123,20 +142,16 @@ async def add_new_avito_account(callback: types.CallbackQuery):
         builder = InlineKeyboardBuilder()
         builder.button(text="🔗 Подключить Avito", url=connect_url)
         builder.button(text="❌ Отмена", callback_data="navigate:accounts_list")
-        
-        # Располагаем кнопки одна под другой для лучшей читаемости
         builder.adjust(1)
               
-        # Редактируем сообщение, на котором была нажата кнопка, заменяя его на новое
         await callback.message.edit_text(
-            text, 
-            reply_markup=builder.as_markup(), 
-            parse_mode="Markdown"
+            text, reply_markup=builder.as_markup(), parse_mode="Markdown"
         )
 
+    except TariffLimitReachedError as e:
+        await callback.answer(str(e), show_alert=True)
     except Exception as e:
         logger.error(f"Error in add_new_avito_account: {e}", exc_info=True)
-        # Если что-то пошло не так, сообщаем пользователю
         await callback.message.answer("Произошла ошибка при генерации ссылки. Попробуйте снова.")
 
 async def some_handler_to_add_account(user: User):
@@ -158,117 +173,124 @@ async def handle_navigation_callback(callback: types.CallbackQuery, state: FSMCo
     await handle_navigation_by_action(action, callback, state)
 
 
-@router.message(F.text, F.reply_to_message, HasAvitoContextFilter()) # <--- Добавили F.text
+@router.message(F.text, F.reply_to_message, HasAvitoContextFilter())
 async def handle_reply_message(message: types.Message, redis_client: redis.Redis, avito_context: dict):
     logger.info(f"Handling text reply to Avito message. Context: {avito_context}")
-    # 1. Сначала отправляем команду "прочитано"
-    await redis_client.xadd(
-        "avito:chat:actions",
-        {"account_id": str(avito_context['avito_account_id']), "chat_id": avito_context['avito_chat_id'], "action": "mark_read"}
-    )
-    # 2. Затем отправляем текстовое сообщение на отправку
-    outgoing_message = {
-        "account_id": str(avito_context['avito_account_id']),
-        "chat_id": avito_context['avito_chat_id'],
-        "text": message.text, # Убираем `or "[Отправлено вложение]"`
-        "action_type": "manual_reply",
-        "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}"
-    }
-    await redis_client.xadd("avito:outgoing:messages", outgoing_message)
+    
     try:
-        await message.delete()
-    except TelegramBadRequest as e:
-        logger.warning(f"Could not delete user's reply message: {e}")
+        # --- ИЗМЕНЕНИЕ: Проверка дневного лимита сообщений ---
+        user = await get_or_create_user(message.from_user.id, message.from_user.username)
+        await billing_service.check_and_increment_daily_messages(user, redis_client)
 
-# --- НОВОЕ: Хендлер для ответа ФОТОГРАФИЕЙ ---
+        # --- Существующая логика ---
+        await redis_client.xadd(
+            "avito:chat:actions",
+            {"account_id": str(avito_context['avito_account_id']), "chat_id": avito_context['avito_chat_id'], "action": "mark_read"}
+        )
+        outgoing_message = {
+            "account_id": str(avito_context['avito_account_id']),
+            "chat_id": avito_context['avito_chat_id'],
+            "text": message.text,
+            "action_type": "manual_reply",
+            "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}"
+        }
+        await redis_client.xadd("avito:outgoing:messages", outgoing_message)
+        await message.delete()
+
+    except TariffLimitReachedError as e:
+        # --- ИЗМЕНЕНИЕ: Обработка ошибки лимита ---
+        await message.reply(f"❗️ {e}\n\nЧтобы снять ограничение, перейдите на более высокий тариф.")
+    except Exception as e:
+        logger.error(f"Error in handle_reply_message: {e}", exc_info=True)
+        await message.reply("❌ Произошла ошибка при отправке сообщения.")
+
+# --- Хендлер для ответа ФОТОГРАФИЕЙ ---
 @router.message(F.photo, F.reply_to_message, HasAvitoContextFilter())
 async def handle_photo_reply(message: types.Message, redis_client: redis.Redis, bot: Bot, avito_context: dict):
-    """
-    Подход 2: Удаляет старые сообщения и пересылает новые в правильном порядке.
-    """
     logger.info(f"Handling PHOTO reply (re-send logic). Context: {avito_context}")
     
     old_card_message = message.reply_to_message
     if not old_card_message: return
 
-    # 1. Сохраняем все нужные данные
-    photo = message.photo[-1]
-    photo_file_id = photo.file_id
-    caption = message.caption or ""
-
-    # 2. Удаляем старые сообщения
     try:
-        await old_card_message.delete()
-        await message.delete()
-    except TelegramBadRequest as e:
-        logger.warning(f"Could not delete old messages: {e}")
+        # --- ИЗМЕНЕНИЕ: Проверка дневного лимита сообщений ДО всех действий ---
+        user = await get_or_create_user(message.from_user.id, message.from_user.username)
+        await billing_service.check_and_increment_daily_messages(user, redis_client)
 
-    # 3. Отправляем новые сообщения в правильном порядке
-    new_photo_message = None
-    new_card_message = None
-    try:
-        # Сначала отправляем фото
-        new_photo_message = await bot.send_photo(
-            chat_id=message.chat.id,
-            photo=photo_file_id,
-            caption=f"<i>(Ваше вложение для Avito)</i>\n{caption}",
-            parse_mode=ParseMode.HTML
-        )
-        # Затем отправляем новую карточку
-        new_card_message = await bot.send_message(
-            chat_id=message.chat.id,
-            text=old_card_message.text + "\n\n<b>⏳ Отправляю ваше изображение...</b>",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to resend messages: {e}")
-        await bot.send_message(message.chat.id, "❌ Произошла ошибка при обработке вашего фото.")
-        return
+        # --- Существующая логика ---
+        photo = message.photo[-1]
+        photo_file_id = photo.file_id
+        caption = message.caption or ""
 
-    # 4. Основная логика отправки в Avito
-    try:
-        account_id = int(avito_context['avito_account_id'])
-        chat_id = avito_context['avito_chat_id']
-        account = await get_avito_account_by_id(account_id)
-        if not account:
-            raise ValueError("Аккаунт Avito не найден")
+        try:
+            await old_card_message.delete()
+            await message.delete()
+        except TelegramBadRequest as e:
+            logger.warning(f"Could not delete old messages: {e}")
 
-        file_info = await bot.get_file(photo_file_id)
-        image_bytes = await bot.download_file(file_info.file_path)
-        
-        api_client = AvitoAPIClient(account)
-        messaging = AvitoMessaging(api_client)
-        upload_response = await messaging.upload_image(image_bytes.read())
-        image_id = list(upload_response.keys())[0]
-        
-        # 5. Ставим в очередь задачу на отправку
-        outgoing_message = {
-            "account_id": str(account_id),
-            "chat_id": chat_id,
-            "action_type": "image_reply",
-            "image_id": image_id,
-            "text": caption,
-            "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}",
-        }
-        await redis_client.xadd("avito:outgoing:messages", outgoing_message)
-
-        # 6. Подписываем новую карточку на обновления
-        view_key = f"chat_view:{account_id}:{chat_id}"
-        await subscribe_user_to_view(redis_client, view_key, message.from_user.id, new_card_message.message_id)
-        # И сохраняем контекст для ответа уже на новую карточку
-        context_key = f"tg_context:{new_card_message.message_id}"
-        avito_context['can_reply'] = 'true' # Убедимся, что права на ответ сохраняются
-        await redis_client.set(context_key, json.dumps(avito_context), ex=REPLY_MAPPING_TTL)
-
-    except Exception as e:
-        logger.error(f"Error handling photo reply for chat {chat_id}: {e}", exc_info=True)
-        if new_card_message:
-            await bot.edit_message_text(
-                text=new_card_message.text.replace("⏳ Отправляю ваше изображение...", "❌ Ошибка отправки."),
-                chat_id=new_card_message.chat.id,
-                message_id=new_card_message.message_id
+        new_photo_message = None
+        new_card_message = None
+        try:
+            new_photo_message = await bot.send_photo(
+                chat_id=message.chat.id, photo=photo_file_id,
+                caption=f"<i>(Ваше вложение для Avito)</i>\n{caption}", parse_mode=ParseMode.HTML
             )
+            new_card_message = await bot.send_message(
+                chat_id=message.chat.id,
+                text=old_card_message.text + "\n\n<b>⏳ Отправляю ваше изображение...</b>",
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to resend messages: {e}")
+            await bot.send_message(message.chat.id, "❌ Произошла ошибка при обработке вашего фото.")
+            return
+
+        # Основная логика отправки в Avito
+        try:
+            account_id = int(avito_context['avito_account_id'])
+            chat_id = avito_context['avito_chat_id']
+            account = await get_avito_account_by_id(account_id)
+            if not account: raise ValueError("Аккаунт Avito не найден")
+
+            file_info = await bot.get_file(photo_file_id)
+            image_bytes = await bot.download_file(file_info.file_path)
+            
+            api_client = AvitoAPIClient(account)
+            messaging = AvitoMessaging(api_client)
+            upload_response = await messaging.upload_image(image_bytes.read())
+            image_id = list(upload_response.keys())[0]
+            
+            outgoing_message = {
+                "account_id": str(account_id), "chat_id": chat_id, "action_type": "image_reply",
+                "image_id": image_id, "text": caption,
+                "author_name": message.from_user.first_name or message.from_user.username or f"ID {message.from_user.id}",
+            }
+            await redis_client.xadd("avito:outgoing:messages", outgoing_message)
+
+            view_key = f"chat_view:{account_id}:{chat_id}"
+            await subscribe_user_to_view(redis_client, view_key, message.from_user.id, new_card_message.message_id)
+            context_key = f"tg_context:{new_card_message.message_id}"
+            avito_context['can_reply'] = 'true'
+            await redis_client.set(context_key, json.dumps(avito_context), ex=REPLY_MAPPING_TTL)
+        except Exception as e_inner:
+            logger.error(f"Error during Avito processing for chat {chat_id}: {e_inner}", exc_info=True)
+            if new_card_message:
+                await bot.edit_message_text(
+                    text=new_card_message.text.replace("⏳ Отправляю ваше изображение...", "❌ Ошибка отправки."),
+                    chat_id=new_card_message.chat.id, message_id=new_card_message.message_id
+                )
+    
+    except TariffLimitReachedError as e:
+        # --- ИЗМЕНЕНИЕ: Обработка ошибки лимита ---
+        await message.reply(f"❗️ {e}\n\nЧтобы снять ограничение, перейдите на более высокий тариф.")
+        # Восстанавливаем карточку для пользователя
+        await show_chat_card_by_context(avito_context, message.from_user, redis_client, bot)
+        # Удаляем его сообщение, которое не удалось отправить
+        await message.delete()
+
+    except Exception as e:
+        logger.error(f"Outer error in handle_photo_reply for chat {avito_context.get('avito_chat_id')}: {e}", exc_info=True)
+        await message.reply("❌ Не удалось отправить изображение. Попробуйте снова.")
 
 @router.message(CommandStart(deep_link=True))
 async def handle_deep_link(message: types.Message, command: CommandObject, state: FSMContext, redis_client):
